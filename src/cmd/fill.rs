@@ -1,3 +1,5 @@
+use std::collections::hash_map::{HashMap, Entry};
+
 use csv;
 
 use CliResult;
@@ -17,6 +19,9 @@ Usage:
     xsv fill [options] [--] <selection> [<input>]
     xsv fill --help
 
+fill options:
+	-g --groupby <selection>     Group by specified columns.
+
 Common options:
     -h, --help             Display this message
     -o, --output <file>    Write output to <file> instead of stdout.
@@ -35,7 +40,8 @@ struct Args {
     arg_selection: SelectColumns,
     flag_output: Option<String>,
     flag_no_headers: bool,
-    flag_delimiter: Option<Delimiter>,	
+    flag_delimiter: Option<Delimiter>,
+	flag_groupby: Option<SelectColumns>
 }
 
 pub fn run(argv: &[&str]) -> CliResult<()> {
@@ -47,7 +53,69 @@ pub fn run(argv: &[&str]) -> CliResult<()> {
         .select(args.arg_selection);
 	
 	let wconfig = Config::new(&args.flag_output);
+	
+	if let Some(groupby) = args.flag_groupby {
+		return fill_forward_groupby(rconfig, wconfig, groupby);
+	}
+	
     fill_forward_simple(rconfig, wconfig)
+}
+
+type Grouper = HashMap<Vec<ByteString>, HashMap<usize, ByteString>>;
+
+fn fill_forward_groupby(rconfig: Config, wconfig: Config, groupby: SelectColumns) -> CliResult<()> {
+	
+	let mut rdr = rconfig.reader()?;
+	let mut wtr = wconfig.writer()?;
+	
+    let headers = rdr.byte_headers()?.clone();
+    let sel = rconfig.selection(&headers)?;
+	let gby = groupby.selection(&headers, true)?;
+	
+    if !rconfig.no_headers {
+        rconfig.write_headers(&mut rdr, &mut wtr)?;
+    }
+	
+	let mut grouper = Grouper::new();
+	
+	let mut record = csv::ByteRecord::new();
+	
+	while rdr.read_byte_record(&mut record)? {
+		
+		let groupkey : Vec<ByteString> = gby.iter().map(|&i| record[i].to_vec()).collect();
+		
+		// Set last valid value where applicable.
+		for &i in sel.iter().filter(|&j| &record[*j] != b"") {
+            match grouper.entry(groupkey.clone()) {
+                Entry::Vacant(v) => {
+                    let mut values = HashMap::new();
+					values.insert(i, record[i].to_vec());
+                    v.insert(values);
+                }
+                Entry::Occupied(mut v) => {
+                    v.get_mut().insert(i, record[i].to_vec());
+                }
+            }
+		}
+		
+		// Fill with last valid value, silently ignore when we haven't seen
+		// a valid value
+		let mut row : Vec<ByteString> = record.iter().map(|f| f.to_vec()).collect();
+		for &i in sel.iter().filter(|&j| &record[*j] == b"") {
+			match grouper.get(&groupkey) {
+				None => {}
+				Some(v) => {
+					match v.get(&i) {
+						Some(f) => { row[i] = f.clone() },
+						None => {},
+					}
+				}
+			}
+		}
+		wtr.write_record(row.iter())?;
+	}
+	wtr.flush()?;
+	Ok(())
 }
 
 // This is the simplest of the fill methods, iterative, forward, and uncomplicated.
