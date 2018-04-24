@@ -45,9 +45,16 @@ pub fn run(argv: &[&str]) -> CliResult<()> {
         .delimiter(args.flag_delimiter)
         .no_headers(args.flag_no_headers)
         .select(args.arg_selection);
+	
+	let wconfig = Config::new(&args.flag_output);
+    fill_forward_simple(rconfig, wconfig)
+}
 
+// This is the simplest of the fill methods, iterative, forward, and uncomplicated.
+fn fill_forward_simple(rconfig: Config, wconfig: Config) -> CliResult<()> {
+	
     let mut rdr = rconfig.reader()?;
-    let mut wtr = Config::new(&args.flag_output).writer()?;
+    let mut wtr = wconfig.writer()?;
 
     let headers = rdr.byte_headers()?.clone();
     let sel = rconfig.selection(&headers)?;
@@ -55,7 +62,7 @@ pub fn run(argv: &[&str]) -> CliResult<()> {
     if !rconfig.no_headers {
         rconfig.write_headers(&mut rdr, &mut wtr)?;
     }
-	
+
 	let mut lastvalid : Vec<Option<ByteString>> = Vec::new();
 	{
 		let mut record = csv::ByteRecord::new();
@@ -66,14 +73,14 @@ pub fn run(argv: &[&str]) -> CliResult<()> {
 		}));
 		wtr.write_record(&record)?;
 	}
-	
+
     for r in rdr.byte_records() {
 		let mut record = r?;
 		let mut riter = record.iter();
-		
+	
 		for (i, field) in riter.enumerate() {
 			let mut field = field;		
-			
+		
 			if sel.contains(&i) {
 				if field != b"" {
 					lastvalid[i] = Some(field.to_vec());
@@ -89,5 +96,6 @@ pub fn run(argv: &[&str]) -> CliResult<()> {
 		wtr.write_record(None::<&[u8]>)?;
     }
     wtr.flush()?;
-    Ok(())
+	Ok(())
 }
+	
