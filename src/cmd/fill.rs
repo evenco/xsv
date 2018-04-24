@@ -1,10 +1,11 @@
 use std::collections::hash_map::{HashMap, Entry};
+use std::io;
 
 use csv;
 
 use CliResult;
 use config::{Config, Delimiter};
-use select::SelectColumns;
+use select::{SelectColumns, Selection};
 use util;
 
 static USAGE: &'static str = "
@@ -34,6 +35,9 @@ Common options:
 
 type ByteString = Vec<u8>;
 
+type BoxedWriter = csv::Writer<Box<io::Write+'static>>;
+type BoxedReader = csv::Reader<Box<io::Read+'static>>;
+
 #[derive(Deserialize)]
 struct Args {
     arg_input: Option<String>,
@@ -54,39 +58,101 @@ pub fn run(argv: &[&str]) -> CliResult<()> {
 	
 	let wconfig = Config::new(&args.flag_output);
 	
-	if let Some(groupby) = args.flag_groupby {
-		return fill_forward_groupby(rconfig, wconfig, groupby);
-	}
-	
-    fill_forward_simple(rconfig, wconfig)
-}
-
-type Grouper = HashMap<Vec<ByteString>, HashMap<usize, ByteString>>;
-
-fn fill_forward_groupby(rconfig: Config, wconfig: Config, groupby: SelectColumns) -> CliResult<()> {
-	
 	let mut rdr = rconfig.reader()?;
 	let mut wtr = wconfig.writer()?;
 	
     let headers = rdr.byte_headers()?.clone();
-    let sel = rconfig.selection(&headers)?;
-	let gby = groupby.selection(&headers, true)?;
+    let select = rconfig.selection(&headers)?;
+	let groupby = match args.flag_groupby {
+		Some(value) => Some(value.selection(&headers, !rconfig.no_headers)?),
+		None => None,
+	};
 	
     if !rconfig.no_headers {
         rconfig.write_headers(&mut rdr, &mut wtr)?;
     }
+	let ffill = ForwardFill::new(groupby, select);
+	ffill.fill(&mut rdr, &mut wtr)
+}
+
+type Grouper = HashMap<Vec<ByteString>, HashMap<usize, ByteString>>;
+type VecRecord = Vec<ByteString>;
+
+trait Filler {
 	
-	let mut grouper = Grouper::new();
+	fn groupbykey(&self, groupkey: Option<VecRecord>, record: &csv::ByteRecord, groupby: Option<&Selection>) -> Result<VecRecord, String> {
+		match groupkey {
+			Some(value) => Ok(value),
+			None => Ok(match groupby {
+				Some(ref value) => value.iter().map(|&i| record[i].to_vec()).collect(),
+				None => vec![]
+			})
+		}
+	}
 	
-	let mut record = csv::ByteRecord::new();
+	fn fill(self, rdr: &mut BoxedReader, wtr: &mut BoxedWriter) -> CliResult<()>;
+	fn memorize(&mut self, record: &csv::ByteRecord, groupkey: Option<VecRecord>) -> CliResult<()>;
+	fn filledvalues(&mut self, record: &csv::ByteRecord, groupkey: Option<VecRecord>) -> Result<VecRecord, String>;
+}
+
+struct ForwardFill {
+	grouper : Grouper,
+	groupby : Option<Selection>,
+	select : Selection,
+}
+
+impl ForwardFill {
 	
-	while rdr.read_byte_record(&mut record)? {
-		
-		let groupkey : Vec<ByteString> = gby.iter().map(|&i| record[i].to_vec()).collect();
-		
-		// Set last valid value where applicable.
-		for &i in sel.iter().filter(|&j| &record[*j] != b"") {
-            match grouper.entry(groupkey.clone()) {
+	fn new(groupby: Option<Selection>, select: Selection) -> Self {
+		ForwardFill {
+			grouper: Grouper::new(),
+			groupby: groupby,
+			select: select
+		}
+	}
+	
+}
+
+impl Filler for ForwardFill {
+	
+	fn fill(mut self, rdr: &mut BoxedReader, wtr: &mut BoxedWriter) -> CliResult<()> {
+		let mut record = csv::ByteRecord::new();
+	
+		while rdr.read_byte_record(&mut record)? {
+			
+			// Precompute groupby key
+			let groupbykey = Some(self.groupbykey(None, &record, self.groupby.as_ref())?);
+			self.memorize(&record, groupbykey.clone())?;
+			
+			let row = self.filledvalues(&record, groupbykey.clone())?;
+			wtr.write_record(row.iter())?;
+		}
+		wtr.flush()?;
+		Ok(())
+	}
+	
+	fn filledvalues(&mut self, record: &csv::ByteRecord, groupkey: Option<VecRecord>) -> Result<VecRecord, String> {
+		let groupkey = self.groupbykey(groupkey, record, self.groupby.as_ref())?;
+
+		let mut row : VecRecord = record.iter().map(|f| f.to_vec()).collect();
+		for &i in self.select.iter().filter(|&j| &record[*j] == b"") {
+			match self.grouper.get(&groupkey) {
+				None => {}
+				Some(v) => {
+					match v.get(&i) {
+						Some(f) => { row[i] = f.clone() },
+						None => {},
+					}
+				}
+			}
+		}
+		Ok(row)
+	}
+	
+	fn memorize(&mut self, record: &csv::ByteRecord, groupkey: Option<VecRecord>) -> CliResult<()>	 {
+		let groupkey = self.groupbykey(groupkey, record, self.groupby.as_ref())?;
+		for &i in self.select.iter().filter(|&j| &record[*j] != b"") {
+            match self.grouper.entry(groupkey.clone()) {
                 Entry::Vacant(v) => {
                     let mut values = HashMap::new();
 					values.insert(i, record[i].to_vec());
@@ -97,73 +163,6 @@ fn fill_forward_groupby(rconfig: Config, wconfig: Config, groupby: SelectColumns
                 }
             }
 		}
-		
-		// Fill with last valid value, silently ignore when we haven't seen
-		// a valid value
-		let mut row : Vec<ByteString> = record.iter().map(|f| f.to_vec()).collect();
-		for &i in sel.iter().filter(|&j| &record[*j] == b"") {
-			match grouper.get(&groupkey) {
-				None => {}
-				Some(v) => {
-					match v.get(&i) {
-						Some(f) => { row[i] = f.clone() },
-						None => {},
-					}
-				}
-			}
-		}
-		wtr.write_record(row.iter())?;
+		Ok(())
 	}
-	wtr.flush()?;
-	Ok(())
 }
-
-// This is the simplest of the fill methods, iterative, forward, and uncomplicated.
-fn fill_forward_simple(rconfig: Config, wconfig: Config) -> CliResult<()> {
-	
-    let mut rdr = rconfig.reader()?;
-    let mut wtr = wconfig.writer()?;
-
-    let headers = rdr.byte_headers()?.clone();
-    let sel = rconfig.selection(&headers)?;
-
-    if !rconfig.no_headers {
-        rconfig.write_headers(&mut rdr, &mut wtr)?;
-    }
-
-	let mut lastvalid : Vec<Option<ByteString>> = Vec::new();
-	{
-		let mut record = csv::ByteRecord::new();
-		rdr.read_byte_record(&mut record)?;
-		lastvalid.extend(record.iter().map(|v| match v {
-			b"" => None,
-			value @ _ => Some(value.to_vec())
-		}));
-		wtr.write_record(&record)?;
-	}
-
-    for r in rdr.byte_records() {
-		let mut record = r?;
-		let mut riter = record.iter();
-	
-		for (i, field) in riter.enumerate() {
-			let mut field = field;		
-		
-			if sel.contains(&i) {
-				if field != b"" {
-					lastvalid[i] = Some(field.to_vec());
-				} else {
-					field = match lastvalid[i] {
-						None => b"",
-						Some(ref value) => value
-					}
-				}
-			}
-			wtr.write_field(field)?;
-		}
-		wtr.write_record(None::<&[u8]>)?;
-    }
-    wtr.flush()?;
-	Ok(())
-}
-	

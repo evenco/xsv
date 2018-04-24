@@ -1,6 +1,14 @@
 use CsvRecord;
 use workdir::Workdir;
 
+fn compare_column(got: &[CsvRecord], expected: &[String], column: usize, skip_header: bool) {
+
+
+    for (value, value_expected) in got.iter().skip(if skip_header {1} else {0}).map(|row| &row[column]).zip(expected.iter()) {
+		assert_eq!(value, value_expected)
+	}
+}
+
 #[test]
 fn fill_forward_one() {
     let rows = vec![
@@ -18,10 +26,8 @@ fn fill_forward_one() {
     cmd.arg("--").arg("1").arg("in.csv");
 
     let got: Vec<CsvRecord> = wrk.read_stdout(&mut cmd);
-    assert_eq!(got[1][0], "a");
-    assert_eq!(got[2][0], "a");
-    assert_eq!(got[3][0], "f");
-    assert_eq!(got[4][0], "f");
+    let expected = svec!["a", "a", "f", "f"];
+    compare_column(&got, &expected, 0, true);
 }
 
 #[test]
@@ -45,8 +51,6 @@ fn fill_forward_groupby() {
 	
 	let got: Vec<CsvRecord> = wrk.read_stdout(&mut cmd);
 	let expected = svec!["a", "a", "f", "f", "a", "f"];
-	for (v, v_expected) in got.iter().skip(1).map(|row| &row[0]).zip(expected.iter()) {
-		assert_eq!(v, v_expected)
-	}
+    compare_column(&got, &expected, 0, true);
 	
 }
