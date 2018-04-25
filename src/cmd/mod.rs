@@ -1,4 +1,5 @@
 pub mod cat;
+pub mod coalesce;
 pub mod count;
 pub mod fixlengths;
 pub mod flatten;
