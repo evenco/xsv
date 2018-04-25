@@ -17,13 +17,28 @@ using the last seen non-empty field in the CSV. This is
 useful to forward-fill values which may only be included
 the first time they are encountered.
 
+The option `--first` allows you to fill empty values
+using the first seen non-empty value in that column,
+even if the first valid value occurs after the first
+empty value. This requires buffering some rows in memory.
+
+The option `--groupby` groups the rows by the specified
+columns before filling in the empty values. Using this
+option, empty values are only filled with values which
+belong to the same group of rows, as determined by the
+columns selected in the `--groupby` option.
+
+When both `--groupby` and `--first` are specified, and the
+CSV is not sorted by the `--groupby` columns, rows may be
+re-ordered during output.
+
 Usage:
     xsv fill [options] [--] <selection> [<input>]
     xsv fill --help
 
 fill options:
-	-g --groupby <selection>     Group by specified columns.
-    -1 --first             Fill using the first value of a column.
+    -g --groupby <keys>    Group by specified columns.
+    -f --first             Fill using the first value of a column.
 
 Common options:
     -h, --help             Display this message

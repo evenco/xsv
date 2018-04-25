@@ -45,6 +45,7 @@ macro_rules! command_list {
 "
     cat         Concatenate by row or column
     count       Count records
+    fill        Fill empty values
     fixlengths  Makes all records have same length
     flatten     Show one field per line
     fmt         Format CSV output (change field delimiter)

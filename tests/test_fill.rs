@@ -17,7 +17,7 @@ fn fill_forward() {
         svec!["h1", "h2", "h3"],
         svec!["", "b", "c"],
         svec!["a", "b", "c"],
-        svec!["", "d", "e"],
+        svec!["", "d", ""],
         svec!["f", "g", "h"],
         svec!["", "i", "j"],
     ];
@@ -31,6 +31,8 @@ fn fill_forward() {
     let got: Vec<CsvRecord> = wrk.read_stdout(&mut cmd);
     let expected = svec!["", "a", "a", "f", "f"];
     compare_column(&got, &expected, 0, true);
+    let expected = svec!["c", "c", "", "h", "j"];
+    compare_column(&got, &expected, 2, true);
 }
 
 #[test]
