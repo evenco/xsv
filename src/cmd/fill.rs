@@ -23,6 +23,7 @@ Usage:
 
 fill options:
 	-g --groupby <selection>     Group by specified columns.
+    -1 --first             Fill using the first value of a column.
 
 Common options:
     -h, --help             Display this message
@@ -47,6 +48,7 @@ struct Args {
     flag_no_headers: bool,
     flag_delimiter: Option<Delimiter>,
     flag_groupby: Option<SelectColumns>,
+    flag_first: bool,
 }
 
 pub fn run(argv: &[&str]) -> CliResult<()> {
@@ -72,12 +74,17 @@ pub fn run(argv: &[&str]) -> CliResult<()> {
     if !rconfig.no_headers {
         rconfig.write_headers(&mut rdr, &mut wtr)?;
     }
-    let ffill = ForwardFill::new(groupby, select);
-    ffill.fill(&mut rdr, &mut wtr)
+
+    if args.flag_first {
+        FirstFill::new(groupby, select).fill(&mut rdr, &mut wtr)
+    } else {
+        ForwardFill::new(groupby, select).fill(&mut rdr, &mut wtr)
+    }
 }
 
-type Grouper = HashMap<Vec<ByteString>, HashMap<usize, ByteString>>;
 type VecRecord = Vec<ByteString>;
+type GroupValues = HashMap<usize, ByteString>;
+type Grouper = HashMap<VecRecord, GroupValues>;
 
 trait Filler {
     fn groupbykey(
@@ -101,7 +108,76 @@ trait Filler {
         &mut self,
         record: &csv::ByteRecord,
         groupkey: Option<VecRecord>,
-    ) -> Result<VecRecord, String>;
+    ) -> Result<VecRecord,String>;
+}
+
+trait GroupFiller {
+    fn fill(&self, groupkey: &VecRecord, col: usize, field: ByteString) -> ByteString;
+    fn memorize(&mut self, groupkey: &VecRecord, col: usize, field: ByteString);
+    fn memorize_first(&mut self, groupkey: &VecRecord, col: usize, field: ByteString);
+}
+
+impl GroupFiller for Grouper {
+    
+    fn fill(&self, groupkey: &VecRecord, col: usize, field: ByteString) -> ByteString {
+        if field != b"" {
+            return field;
+        }
+        match self.get(groupkey) {
+            None => field,
+            Some(v) => match v.get(&col) {
+                Some(f) => f.clone(),
+                None => field,
+            },
+        }
+    }
+
+    fn memorize(&mut self, groupkey: &VecRecord, col: usize, field: ByteString)
+    {
+        match self.entry(groupkey.clone()) {
+                Entry::Vacant(v) => {
+                    let mut values = HashMap::new();
+                    values.insert(col, field);
+                    v.insert(values);
+                }
+                Entry::Occupied(mut v) => {
+                    v.get_mut().insert(col, field);
+                }
+            }
+    }
+
+    fn memorize_first(&mut self, groupkey: &VecRecord, col: usize, field: ByteString) {
+                match self.entry(groupkey.clone()) {
+                Entry::Vacant(v) => {
+                    let mut values = HashMap::new();
+                    values.entry(col).or_insert(field);
+                    v.insert(values);
+                }
+                Entry::Occupied(mut v) => {
+                    v.get_mut().entry(col).or_insert(field);
+                }
+            }
+    }
+}
+
+trait Fillable {
+    fn fill(&self, selection: &Selection, grouper: &Grouper, groupbykey: &VecRecord) -> VecRecord;
+}
+
+impl Fillable for csv::ByteRecord {
+    fn fill(&self, selection: &Selection, grouper: &Grouper, groupbykey: &VecRecord) -> VecRecord {
+        self.iter().map(|f| f.to_vec()).enumerate().map_selected(selection, 
+             |(i, field)| (i, grouper.fill(groupbykey, i, field))).map(
+             |(_, field)| field).collect()
+    }
+}
+
+impl Fillable for VecRecord {
+    fn fill(&self, selection: &Selection, grouper: &Grouper, groupbykey: &VecRecord) -> VecRecord {
+        self.iter().map(|f| f.to_vec()).enumerate().map_selected(selection, 
+             |(i, field)| (i, grouper.fill(groupbykey, i, field))).map(
+             |(_, field)| field).collect()
+    }
 }
 
 struct ForwardFill {
@@ -121,6 +197,7 @@ impl ForwardFill {
 }
 
 impl Filler for ForwardFill {
+    
     fn fill(mut self, rdr: &mut BoxedReader, wtr: &mut BoxedWriter) -> CliResult<()> {
         let mut record = csv::ByteRecord::new();
 
@@ -140,53 +217,107 @@ impl Filler for ForwardFill {
         &mut self,
         record: &csv::ByteRecord,
         groupkey: Option<VecRecord>,
-    ) -> Result<VecRecord, String> {
+    ) -> Result<VecRecord,String> {
         let groupkey = self.groupbykey(groupkey, record, self.groupby.as_ref())?;
-
-        let row: VecRecord = map_selected(
-            self.select.iter().map(|&x| x).collect(),
-            record.iter().map(|f| f.to_vec()).enumerate(),
-            |(i, field)| {
-                if field == b"" {
-                    match self.grouper.get(&groupkey) {
-                        None => (i, field),
-                        Some(v) => match v.get(&i) {
-                            Some(f) => (i, f.clone()),
-                            None => (i, field),
-                        },
-                    }
-                } else {
-                    (i, field)
-                }
-            },
-        ).map(|(_i, field)| field)
-            .collect();
-
+        let row = record.fill(&self.select, &self.grouper, &groupkey);
         Ok(row)
     }
+    
+
 
     fn memorize(&mut self, record: &csv::ByteRecord, groupkey: Option<VecRecord>) -> CliResult<()> {
         let groupkey = self.groupbykey(groupkey, record, self.groupby.as_ref())?;
-
         for (i, field) in self.select
             .iter()
             .map(|&i| (i, &record[i]))
-            .filter(|&(i, field)| field != b"")
+            .filter(|&(_i, field)| field != b"")
         {
-            match self.grouper.entry(groupkey.clone()) {
-                Entry::Vacant(v) => {
-                    let mut values = HashMap::new();
-                    values.insert(i, field.to_vec());
-                    v.insert(values);
-                }
-                Entry::Occupied(mut v) => {
-                    v.get_mut().insert(i, field.to_vec());
-                }
-            }
+            self.grouper.memorize(&groupkey, i, field.to_vec())
         }
 
         Ok(())
     }
+}
+
+struct FirstFill {
+	grouper: Grouper,
+    groupby: Option<Selection>,
+    select: Selection,
+    buffer: HashMap<VecRecord, Vec<VecRecord>>,
+}
+
+impl FirstFill {
+	
+	fn new(groupby: Option<Selection>, select: Selection) -> Self {
+		Self {
+			grouper: Grouper::new(),
+			groupby: groupby,
+			select: select,
+			buffer: HashMap::new(),
+		}
+	}
+}
+
+impl Filler for FirstFill {
+
+    
+    fn fill(mut self, rdr: &mut BoxedReader, wtr: &mut BoxedWriter) -> CliResult<()>
+    {
+        let mut record = csv::ByteRecord::new();
+
+        while rdr.read_byte_record(&mut record)? {
+            // Precompute groupby key
+            let groupbykey = Some(self.groupbykey(None, &record, self.groupby.as_ref())?);
+            let groupkey = groupbykey.clone().unwrap();
+            self.memorize(&record, groupbykey.clone())?;
+            let row = self.filledvalues(&record, groupbykey.clone())?;
+            
+            if self.select.iter().any(|&i| row[i] == b"") {
+                self.buffer.entry(groupbykey.unwrap()).or_insert_with(|| Vec::new()).push(row);
+            } else {
+                if let Some(rows) = self.buffer.remove(&groupkey) {
+                    for buffered_row in rows {
+                        wtr.write_record(buffered_row.fill(&self.select, &self.grouper, &groupkey).iter())?;
+                    }
+                }
+                wtr.write_record(row.iter())?;
+            }
+        }
+        for (key, rows) in self.buffer {
+            for buffered_row in rows {
+                wtr.write_record(buffered_row.fill(&self.select, &self.grouper, &key).iter())?;
+            }
+        }
+
+        wtr.flush()?;
+        Ok(())
+    }
+    
+    fn memorize(&mut self, record: &csv::ByteRecord, groupkey: Option<VecRecord>) -> CliResult<()>
+    {
+        let groupkey = self.groupbykey(groupkey, record, self.groupby.as_ref())?;
+        for (i, field) in self.select
+            .iter()
+            .map(|&i| (i, &record[i]))
+            .filter(|&(_i, field)| field != b"")
+        {
+            self.grouper.memorize_first(&groupkey, i, field.to_vec())
+        }
+
+        Ok(())
+    }
+    
+    fn filledvalues(
+        &mut self,
+        record: &csv::ByteRecord,
+        groupkey: Option<VecRecord>,
+    ) -> Result<VecRecord, String>
+    {
+        let groupkey = self.groupbykey(groupkey, record, self.groupby.as_ref())?;
+        let row = record.fill(&self.select, &self.grouper, &groupkey);
+        Ok(row)
+    }
+
 }
 
 struct MapSelected<I, F> {
@@ -217,16 +348,25 @@ where
     }
 }
 
-fn map_selected<B, I, F>(selection: Vec<usize>, iterator: I, predicate: F) -> MapSelected<I, F>
-where
-    F: FnMut(B) -> B,
-    I: iter::Iterator<Item = B>,
+trait Selectable<B>
+where Self : iter::Iterator<Item=B> + Sized
 {
-    MapSelected {
-        selection: selection,
-        selection_index: 0,
-        index: 0,
-        iterator: iterator,
-        predicate: predicate,
+    fn map_selected<F>(self, selector: &Selection, predicate: F) -> MapSelected<Self, F>
+    where F: FnMut(B) -> B;
+}
+
+impl<B, C> Selectable<B> for C
+where C : iter::Iterator<Item=B> + Sized
+{
+    fn map_selected<F>(self, selector: &Selection, predicate: F) -> MapSelected<Self, F> 
+    where F: FnMut(B) -> B,
+    {
+        MapSelected {
+            selection: selector.iter().map(|&x| x).collect(),
+            selection_index: 0,
+            index: 0,
+            iterator: self,
+            predicate: predicate,
+        }
     }
 }
