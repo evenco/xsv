@@ -44,6 +44,7 @@ macro_rules! command_list {
     () => (
 "
     cat         Concatenate by row or column
+    coalesce    Coalesce empty-valued columns
     count       Count records
     fixlengths  Makes all records have same length
     flatten     Show one field per line
@@ -138,6 +139,7 @@ Please choose one of the following commands:",
 #[derive(Debug, Deserialize)]
 enum Command {
     Cat,
+    Coalesce,
     Count,
     FixLengths,
     Flatten,
@@ -166,6 +168,7 @@ impl Command {
         let argv = &*argv;
         match self {
             Command::Cat => cmd::cat::run(argv),
+            Command::Coalesce => cmd::coalesce::run(argv),
             Command::Count => cmd::count::run(argv),
             Command::FixLengths => cmd::fixlengths::run(argv),
             Command::Flatten => cmd::flatten::run(argv),

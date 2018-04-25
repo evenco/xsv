@@ -34,6 +34,7 @@ macro_rules! rassert_eq {
 mod workdir;
 
 mod test_cat;
+mod test_coalesce;
 mod test_count;
 mod test_fixlengths;
 mod test_flatten;
