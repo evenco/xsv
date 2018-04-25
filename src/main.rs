@@ -168,8 +168,8 @@ impl Command {
         let argv = &*argv;
         match self {
             Command::Cat => cmd::cat::run(argv),
-            Command::Count => cmd::count::run(argv),
             Command::Coalesce => cmd::coalesce::run(argv),
+            Command::Count => cmd::count::run(argv),
             Command::FixLengths => cmd::fixlengths::run(argv),
             Command::Flatten => cmd::flatten::run(argv),
             Command::Fmt => cmd::fmt::run(argv),
