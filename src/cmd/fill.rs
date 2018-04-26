@@ -45,7 +45,7 @@ Usage:
 fill options:
     -g --groupby <keys>    Group by specified columns.
     -f --first             Fill using the first valid value of a column, instead of the latest.
-    -p --backfill          Fill initial empty values with the first valid value.
+    -b --backfill          Fill initial empty values with the first valid value.
 
 Common options:
     -h, --help             Display this message
