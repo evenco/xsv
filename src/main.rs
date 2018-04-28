@@ -140,7 +140,7 @@ Please choose one of the following commands:",
 enum Command {
     Cat,
     Count,
-	Fill,
+    Fill,
     FixLengths,
     Flatten,
     Fmt,
@@ -169,7 +169,7 @@ impl Command {
         match self {
             Command::Cat => cmd::cat::run(argv),
             Command::Count => cmd::count::run(argv),
-			Command::Fill => cmd::fill::run(argv),
+            Command::Fill => cmd::fill::run(argv),
             Command::FixLengths => cmd::fixlengths::run(argv),
             Command::Flatten => cmd::flatten::run(argv),
             Command::Fmt => cmd::fmt::run(argv),
